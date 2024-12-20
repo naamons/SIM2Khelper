@@ -1,13 +1,13 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-from scipy.interpolate import griddata
-from scipy.interpolate import CubicSpline
+from sklearn.linear_model import LinearRegression
 
 def main():
-    st.title("ECU Map Extension Tool")
+    st.title("ECU Map Extension Tool with Linear Regression")
     st.markdown("""
-    Extend your ECU map dynamically by pasting axes and torque data. The app interpolates and extrapolates the map smoothly.
+    Paste your ECU map data (X-axis, Y-axis, and Torque matrix), validate it, 
+    and extend the map dynamically using linear regression.
     """)
 
     # Step 1: Input X-axis (RPM)
@@ -62,7 +62,7 @@ def main():
             st.error(f"Error parsing Torque matrix: {e}")
             return
 
-    # Step 4: Specify maximum torque and intervals for extrapolation
+    # Step 4: Specify maximum torque and factors for extrapolation
     if x_axis_input and y_axis_input and torque_matrix_input:
         st.header("Step 4: Specify Extrapolation Settings")
         max_torque = st.number_input(
@@ -79,29 +79,27 @@ def main():
             # Extend axes
             x_axis_new = np.linspace(x_axis.min(), x_axis.max() * rpm_extension_factor, 100)
             y_axis_new = np.linspace(y_axis.min(), y_axis.max() * airflow_extension_factor, 100)
-            x_grid, y_grid = np.meshgrid(x_axis_new, y_axis_new)
 
-            # Interpolate torque matrix
-            points = np.array([[x, y] for y in y_axis for x in x_axis])
-            torque_flat = torque_matrix.flatten()
-            torque_grid = griddata(
-                points, torque_flat, (x_grid, y_grid), method='cubic', fill_value=np.nan
-            )
+            # Perform linear regression on the last few rows of torque matrix
+            extended_torque_matrix = []
+            for i in range(len(torque_matrix)):
+                last_x = x_axis[-5:]  # Use the last 5 points for regression
+                last_torque = torque_matrix[i, -5:]
 
-            # Fill NaN values using smooth extrapolation
-            for i in range(torque_grid.shape[0]):
-                nan_indices = np.isnan(torque_grid[i])
-                valid_indices = ~np.isnan(torque_grid[i])
-                if np.any(valid_indices):
-                    cs = CubicSpline(x_axis_new[valid_indices], torque_grid[i][valid_indices])
-                    torque_grid[i][nan_indices] = cs(x_axis_new[nan_indices])
+                # Fit linear regression model
+                reg = LinearRegression()
+                reg.fit(last_x.reshape(-1, 1), last_torque)
+
+                # Predict for the new X-axis
+                new_torque = reg.predict(x_axis_new.reshape(-1, 1))
+                extended_torque_matrix.append(new_torque)
 
             # Clip values at max torque
-            torque_grid = np.clip(torque_grid, 0, max_torque)
+            extended_torque_matrix = np.clip(np.array(extended_torque_matrix), 0, max_torque)
 
             # Create DataFrame for the extended map
             extended_map = pd.DataFrame(
-                torque_grid, index=y_axis_new, columns=x_axis_new
+                extended_torque_matrix, index=y_axis_new, columns=x_axis_new
             )
 
             # Display the extended map

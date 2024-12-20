@@ -2,15 +2,12 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 from scipy.interpolate import griddata
+from scipy.interpolate import CubicSpline
 
-# Streamlit app
 def main():
     st.title("ECU Map Extension Tool")
     st.markdown("""
-    Paste the map data section by section:
-    1. X-axis (RPM)
-    2. Y-axis (Airflow)
-    3. Torque values (Matrix)
+    Extend your ECU map dynamically by pasting axes and torque data. The app interpolates and extrapolates the map smoothly.
     """)
 
     # Step 1: Input X-axis (RPM)
@@ -65,27 +62,44 @@ def main():
             st.error(f"Error parsing Torque matrix: {e}")
             return
 
-    # Step 4: Specify maximum torque for extrapolation
+    # Step 4: Specify maximum torque and intervals for extrapolation
     if x_axis_input and y_axis_input and torque_matrix_input:
-        st.header("Step 4: Specify Maximum Torque for Extrapolation")
+        st.header("Step 4: Specify Extrapolation Settings")
         max_torque = st.number_input(
             "Enter the maximum torque value for extrapolation (Nm):", min_value=0, value=800, step=10
+        )
+        rpm_extension_factor = st.slider(
+            "Extend RPM axis by this factor:", min_value=1.0, max_value=2.0, value=1.5, step=0.1
+        )
+        airflow_extension_factor = st.slider(
+            "Extend Airflow axis by this factor:", min_value=1.0, max_value=2.0, value=1.5, step=0.1
         )
 
         if st.button("Generate Extended Map"):
             # Extend axes
-            x_axis_new = np.linspace(x_axis.min(), x_axis.max() * 1.5, 100)
-            y_axis_new = np.linspace(y_axis.min(), y_axis.max() * 1.5, 100)
+            x_axis_new = np.linspace(x_axis.min(), x_axis.max() * rpm_extension_factor, 100)
+            y_axis_new = np.linspace(y_axis.min(), y_axis.max() * airflow_extension_factor, 100)
             x_grid, y_grid = np.meshgrid(x_axis_new, y_axis_new)
 
-            # Interpolate/extrapolate torque values
-            torque_flat = torque_matrix.flatten()
+            # Interpolate torque matrix
             points = np.array([[x, y] for y in y_axis for x in x_axis])
+            torque_flat = torque_matrix.flatten()
             torque_grid = griddata(
-                points, torque_flat, (x_grid, y_grid), method='linear', fill_value=max_torque
+                points, torque_flat, (x_grid, y_grid), method='cubic', fill_value=np.nan
             )
 
-            # Create a DataFrame for the extended map
+            # Fill NaN values using smooth extrapolation
+            for i in range(torque_grid.shape[0]):
+                nan_indices = np.isnan(torque_grid[i])
+                valid_indices = ~np.isnan(torque_grid[i])
+                if np.any(valid_indices):
+                    cs = CubicSpline(x_axis_new[valid_indices], torque_grid[i][valid_indices])
+                    torque_grid[i][nan_indices] = cs(x_axis_new[nan_indices])
+
+            # Clip values at max torque
+            torque_grid = np.clip(torque_grid, 0, max_torque)
+
+            # Create DataFrame for the extended map
             extended_map = pd.DataFrame(
                 torque_grid, index=y_axis_new, columns=x_axis_new
             )
